@@ -1,33 +1,125 @@
-# Transfer Service 설정
+# ========================================
+# Transfer Service - Config Server 설정
+# ========================================
+# 공통 설정(common/application.yml)을 상속받고
+# Transfer Service에 특화된 설정만 정의
+#
+# 역할: 이체 (SAGA 오케스트레이터, 분산 트랜잭션 관리)
+# 포트: 8083
+# DB: transfer_db
+#
+# 학습 포인트: SAGA 패턴, Outbox 패턴, 분산 트랜잭션, 보상 트랜잭션
+# ========================================
 
-server:
-  port: ${SERVER_PORT:8083}
-
+# ========================================
+# 데이터베이스 설정 (공통 설정 오버라이드)
+# ========================================
 spring:
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/transfer_db}
+    # Transfer Service 전용 DB
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/transfer_db
     username: ${DB_USERNAME:transfer}
     password: ${DB_PASSWORD:transfer}
-    driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
-      idle-timeout: 300000
-      connection-timeout: 20000
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-  kafka:
-    consumer:
-      group-id: transfer-service
 
-# Logging
-logging:
-  level:
-    com.junbank.transferservice: DEBUG
-    org.hibernate.SQL: DEBUG
+  # ========================================
+  # Kafka 토픽 설정
+  # ========================================
+  kafka:
+    template:
+      default-topic: transfer-events
+
+# ========================================
+# Kafka 토픽 정의 (SAGA 이벤트)
+# ========================================
+kafka:
+  topic:
+    # ----- 발행 토픽 (Transfer → 다른 서비스) -----
+    # [Step 1] 출금 계좌에서 차감 요청 → Account Service
+    transfer-debit-requested: transfer.debit.requested
+    # [Step 2] 입금 계좌에 입금 요청 → Account Service
+    transfer-credit-requested: transfer.credit.requested
+    # [보상] 출금 롤백 요청 → Account Service (입금 실패 시)
+    transfer-debit-rollback: transfer.debit.rollback
+
+    # 이체 완료 이벤트 → Ledger Service
+    transfer-completed: transfer.completed
+    # 이체 실패 이벤트
+    transfer-failed: transfer.failed
+
+    # ----- 구독 토픽 (다른 서비스 → Transfer) -----
+    # Account Service에서 출금 처리 완료 응답
+    transfer-debit-completed: transfer.debit.completed
+    transfer-debit-failed: transfer.debit.failed
+    # Account Service에서 입금 처리 완료 응답
+    transfer-credit-completed: transfer.credit.completed
+    transfer-credit-failed: transfer.credit.failed
+
+# ========================================
+# Feign Client 설정
+# ========================================
+feign:
+  client:
+    config:
+      # Account Service 호출 설정
+      account-service:
+        connectTimeout: 5000
+        readTimeout: 10000  # 이체는 시간이 더 걸릴 수 있음
+        loggerLevel: full   # 디버깅을 위해 상세 로그
+
+# ========================================
+# Resilience4j 인스턴스 설정
+# ========================================
+resilience4j:
+  circuitbreaker:
+    instances:
+      # Account Service 호출용 Circuit Breaker
+      accountServiceCircuitBreaker:
+        baseConfig: default
+        failureRateThreshold: 50
+        slidingWindowSize: 20
+        # 이체 서비스는 더 오래 기다림
+        waitDurationInOpenState: 30s
+
+  retry:
+    instances:
+      accountServiceRetry:
+        baseConfig: default
+        maxAttempts: 3
+        waitDuration: 1s
+        # 이체 실패 시 재시도는 신중하게
+        retryExceptions:
+          - java.net.ConnectException
+          - java.net.SocketTimeoutException
+          # RuntimeException은 재시도 안 함 (비즈니스 로직 실패)
+
+# ========================================
+# 서비스 고유 설정 (SAGA 관련)
+# ========================================
+transfer-service:
+  # ----- SAGA 설정 -----
+  saga:
+    # SAGA 타임아웃 (초) - 이 시간 내에 완료되지 않으면 보상 트랜잭션 실행
+    timeout-seconds: 60
+    # SAGA 상태 체크 주기 (초)
+    status-check-interval: 5
+    # 최대 재시도 횟수 (보상 트랜잭션 포함)
+    max-retry-count: 3
+
+  # ----- Outbox 패턴 설정 -----
+  outbox:
+    # Outbox 테이블 폴링 주기 (밀리초)
+    polling-interval: 1000
+    # 한 번에 처리할 Outbox 메시지 수
+    batch-size: 100
+    # Outbox 메시지 보관 기간 (일)
+    retention-days: 7
+
+  # ----- 이체 설정 -----
+  # 단건 이체 최대 금액 (원)
+  max-transfer-amount: 100000000
+  # 일일 이체 한도 (원)
+  daily-transfer-limit: 500000000
+  # 이체 수수료 (원)
+  transfer-fee: 0
+  # 타행 이체 수수료 (원)
+  external-transfer-fee: 500
