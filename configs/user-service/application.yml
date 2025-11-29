@@ -1,33 +1,89 @@
-# User Service 설정
+# ========================================
+# User Service - Config Server 설정
+# ========================================
+# 공통 설정(common/application.yml)을 상속받고
+# User Service에 특화된 설정만 정의
+#
+# 역할: 사용자 관리 (회원가입, 프로필 조회/수정, 탈퇴)
+# 포트: 8087
+# DB: user_db
+# ========================================
 
-server:
-  port: ${SERVER_PORT:8087}
-
+# ========================================
+# 데이터베이스 설정 (공통 설정 오버라이드)
+# ========================================
 spring:
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/user_db}
+    # User Service 전용 DB
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/user_db
     username: ${DB_USERNAME:user}
     password: ${DB_PASSWORD:user}
-    driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
-      idle-timeout: 300000
-      connection-timeout: 20000
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-  kafka:
-    consumer:
-      group-id: user-service
 
-# Logging
-logging:
-  level:
-    com.junbank.userservice: DEBUG
-    org.hibernate.SQL: DEBUG
+  # ========================================
+  # Kafka 토픽 설정
+  # ========================================
+  kafka:
+    # User Service가 발행하는 토픽
+    template:
+      default-topic: user-events
+
+# ========================================
+# Kafka 토픽 정의
+# ========================================
+# User Service에서 사용하는 Kafka 토픽
+kafka:
+  topic:
+    # ----- 발행 토픽 (User → 다른 서비스) -----
+    # 회원가입 완료 이벤트 → Auth Server (계정 생성)
+    user-created: user.created
+    # 회원 정보 수정 이벤트
+    user-updated: user.updated
+    # 회원 탈퇴 이벤트 → 모든 서비스 (연관 데이터 정리)
+    user-deleted: user.deleted
+
+    # ----- 구독 토픽 (다른 서비스 → User) -----
+    # 필요 시 추가
+
+# ========================================
+# Feign Client 설정
+# ========================================
+# User Service가 호출하는 다른 서비스
+feign:
+  client:
+    config:
+      # Auth Server 호출 설정
+      auth-server:
+        connectTimeout: 5000
+        readTimeout: 5000
+        loggerLevel: full
+
+# ========================================
+# Resilience4j 인스턴스 설정
+# ========================================
+# User Service 특화 설정 (공통 설정 상속)
+resilience4j:
+  circuitbreaker:
+    instances:
+      # Auth Server 호출용 Circuit Breaker
+      authServerCircuitBreaker:
+        baseConfig: default
+        # 실패율 60% 초과 시 회로 차단
+        failureRateThreshold: 60
+
+  retry:
+    instances:
+      # Auth Server 호출용 Retry
+      authServerRetry:
+        baseConfig: default
+        maxAttempts: 3
+
+# ========================================
+# 서비스 고유 설정
+# ========================================
+user-service:
+  # 회원가입 시 이메일 인증 필요 여부
+  email-verification-required: ${EMAIL_VERIFICATION_REQUIRED:false}
+  # 비밀번호 최소 길이
+  password-min-length: 8
+  # 계정 잠금 임계값 (로그인 실패 횟수)
+  account-lock-threshold: 5
