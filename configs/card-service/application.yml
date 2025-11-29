@@ -1,33 +1,164 @@
-# Card Service 설정
+# ========================================
+# Card Service - Config Server 설정
+# ========================================
+# 공통 설정(common/application.yml)을 상속받고
+# Card Service에 특화된 설정만 정의
+#
+# 역할: 카드 관리/결제 (발급, 해지, 결제 승인, 한도 관리)
+# 포트: 8084
+# DB: card_db
+#
+# 학습 포인트: Circuit Breaker, Retry, Bulkhead, Rate Limiter
+# ========================================
 
-server:
-  port: ${SERVER_PORT:8084}
-
+# ========================================
+# 데이터베이스 설정 (공통 설정 오버라이드)
+# ========================================
 spring:
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/card_db}
+    # Card Service 전용 DB
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/card_db
     username: ${DB_USERNAME:card}
     password: ${DB_PASSWORD:card}
-    driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
-      idle-timeout: 300000
-      connection-timeout: 20000
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-  kafka:
-    consumer:
-      group-id: card-service
 
-# Logging
-logging:
-  level:
-    com.junbank.cardservice: DEBUG
-    org.hibernate.SQL: DEBUG
+  # ========================================
+  # Kafka 토픽 설정
+  # ========================================
+  kafka:
+    template:
+      default-topic: card-events
+
+# ========================================
+# Kafka 토픽 정의
+# ========================================
+kafka:
+  topic:
+    # ----- 발행 토픽 (Card → 다른 서비스) -----
+    # 카드 발급 완료 이벤트
+    card-issued: card.issued
+    # 결제 요청 이벤트 → Account Service (잔액 차감)
+    payment-requested: card.payment.requested
+    # 결제 완료 이벤트 → Ledger Service
+    payment-completed: card.payment.completed
+    # 결제 취소 이벤트
+    payment-cancelled: card.payment.cancelled
+    # 카드 해지 이벤트
+    card-terminated: card.terminated
+
+    # ----- 구독 토픽 (다른 서비스 → Card) -----
+    # Account Service에서 결제 처리 결과
+    account-debit-completed: account.debit.completed
+    account-debit-failed: account.debit.failed
+
+# ========================================
+# Feign Client 설정
+# ========================================
+feign:
+  client:
+    config:
+      # Account Service 호출 설정 (결제 시 잔액 차감)
+      account-service:
+        connectTimeout: 3000  # 결제는 빠른 응답 필요
+        readTimeout: 5000
+        loggerLevel: full
+
+# ========================================
+# Resilience4j 인스턴스 설정 (핵심 학습 대상)
+# ========================================
+resilience4j:
+  # ----- Circuit Breaker 상세 설정 -----
+  circuitbreaker:
+    instances:
+      # Account Service 호출용 (결제 처리)
+      paymentCircuitBreaker:
+        baseConfig: default
+        # 실패율 40% 초과 시 회로 차단 (결제는 엄격하게)
+        failureRateThreshold: 40
+        # 느린 호출 비율 임계값 (%)
+        slowCallRateThreshold: 50
+        # 느린 호출 기준 시간 (이보다 오래 걸리면 느린 호출)
+        slowCallDurationThreshold: 2s
+        # 슬라이딩 윈도우 크기
+        slidingWindowSize: 20
+        # 반개방 상태에서 테스트 호출 수
+        permittedNumberOfCallsInHalfOpenState: 5
+        # 회로 열림 후 대기 시간
+        waitDurationInOpenState: 15s
+
+      # 외부 카드사 API 호출용
+      externalCardApiCircuitBreaker:
+        baseConfig: default
+        failureRateThreshold: 30
+        waitDurationInOpenState: 30s
+
+  # ----- Retry 상세 설정 -----
+  retry:
+    instances:
+      paymentRetry:
+        baseConfig: default
+        maxAttempts: 2  # 결제는 재시도 최소화
+        waitDuration: 500ms
+        # 멱등성이 보장되지 않는 API는 재시도 주의
+        retryExceptions:
+          - java.net.ConnectException
+          - java.net.SocketTimeoutException
+
+      externalCardApiRetry:
+        baseConfig: default
+        maxAttempts: 3
+        waitDuration: 1s
+        enableExponentialBackoff: true
+
+  # ----- Bulkhead 상세 설정 (동시 호출 제한) -----
+  bulkhead:
+    instances:
+      # 결제 처리 동시 호출 제한
+      paymentBulkhead:
+        maxConcurrentCalls: 50
+        maxWaitDuration: 100ms
+
+      # 외부 카드사 API 동시 호출 제한
+      externalCardApiBulkhead:
+        maxConcurrentCalls: 20
+        maxWaitDuration: 500ms
+
+  # ----- Rate Limiter 상세 설정 (호출 빈도 제한) -----
+  ratelimiter:
+    instances:
+      # 결제 API Rate Limit
+      paymentRateLimiter:
+        limitForPeriod: 100   # 초당 100건
+        limitRefreshPeriod: 1s
+        timeoutDuration: 0ms
+
+      # 외부 카드사 API Rate Limit (카드사 정책에 맞게)
+      externalCardApiRateLimiter:
+        limitForPeriod: 50    # 초당 50건
+        limitRefreshPeriod: 1s
+        timeoutDuration: 100ms
+
+# ========================================
+# 서비스 고유 설정
+# ========================================
+card-service:
+  # ----- 카드 설정 -----
+  # 카드번호 생성 규칙 (BIN)
+  card-number-prefix: "9410"
+  # 카드 유효기간 (년)
+  card-validity-years: 5
+  # CVC 길이
+  cvc-length: 3
+
+  # ----- 한도 설정 -----
+  # 단건 결제 최대 금액 (원)
+  max-payment-amount: 10000000
+  # 일일 결제 한도 (원)
+  daily-payment-limit: 30000000
+  # 월간 결제 한도 (원)
+  monthly-payment-limit: 100000000
+
+  # ----- 외부 카드사 API 설정 -----
+  external-api:
+    base-url: ${CARD_EXTERNAL_API_URL:http://localhost:9999}
+    timeout: 5000
+    api-key: ${CARD_EXTERNAL_API_KEY:}
