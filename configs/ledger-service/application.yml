@@ -1,33 +1,143 @@
-# Ledger Service 설정
+# ========================================
+# Ledger Service - Config Server 설정
+# ========================================
+# 공통 설정(common/application.yml)을 상속받고
+# Ledger Service에 특화된 설정만 정의
+#
+# 역할: 원장 기록 (모든 거래의 불변 기록, 감사 로그)
+# 포트: 8085
+# DB: ledger_db
+#
+# 학습 포인트: Append-only 설계, 이벤트 소싱, 감사 로그
+# ========================================
 
-server:
-  port: ${SERVER_PORT:8085}
-
+# ========================================
+# 데이터베이스 설정 (공통 설정 오버라이드)
+# ========================================
 spring:
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/ledger_db}
+    # Ledger Service 전용 DB
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/ledger_db
     username: ${DB_USERNAME:ledger}
     password: ${DB_PASSWORD:ledger}
-    driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
-      idle-timeout: 300000
-      connection-timeout: 20000
+
+  # ----- JPA 설정 오버라이드 -----
+  # Ledger는 Append-only이므로 DDL 자동 생성 주의
   jpa:
     hibernate:
-      ddl-auto: update
-    show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-  kafka:
-    consumer:
-      group-id: ledger-service
+      # validate: 스키마 검증만 (Ledger는 마이그레이션으로 관리 권장)
+      ddl-auto: ${JPA_DDL_AUTO:validate}
 
-# Logging
-logging:
-  level:
-    com.junbank.ledgerservice: DEBUG
-    org.hibernate.SQL: DEBUG
+  # ========================================
+  # Kafka 토픽 설정
+  # ========================================
+  kafka:
+    template:
+      default-topic: ledger-events
+
+    # ----- Consumer 설정 오버라이드 -----
+    # Ledger는 모든 이벤트를 수신해야 하므로 설정 강화
+    consumer:
+      # 메시지 유실 방지: 처음부터 읽기
+      auto-offset-reset: earliest
+      # 수동 커밋 (메시지 처리 완료 후 명시적 커밋)
+      enable-auto-commit: false
+
+    listener:
+      # 수동 승인 모드
+      ack-mode: manual
+      # 동시 처리 컨슈머 스레드 수 (Ledger는 순서 보장 필요 시 1)
+      concurrency: ${KAFKA_LISTENER_CONCURRENCY:3}
+
+# ========================================
+# Kafka 토픽 정의 (구독 위주)
+# ========================================
+kafka:
+  topic:
+    # ----- 발행 토픽 (Ledger → 다른 서비스) -----
+    # 원장 기록 완료 이벤트 (확인용)
+    ledger-entry-created: ledger.entry.created
+    # 잔액 불일치 감지 이벤트 (알림/감사용)
+    balance-mismatch-detected: ledger.balance.mismatch
+
+    # ----- 구독 토픽 (다른 서비스 → Ledger) -----
+    # Account Service 이벤트
+    account-balance-changed: account.balance.changed
+
+    # Transaction Service 이벤트
+    deposit-completed: transaction.deposit.completed
+    withdrawal-completed: transaction.withdrawal.completed
+
+    # Transfer Service 이벤트
+    transfer-completed: transfer.completed
+    transfer-failed: transfer.failed
+
+    # Card Service 이벤트
+    card-payment-completed: card.payment.completed
+    card-payment-cancelled: card.payment.cancelled
+
+# ========================================
+# Feign Client 설정
+# ========================================
+feign:
+  client:
+    config:
+      # Account Service 호출 설정 (잔액 검증용)
+      account-service:
+        connectTimeout: 5000
+        readTimeout: 5000
+        loggerLevel: basic
+
+# ========================================
+# Resilience4j 인스턴스 설정
+# ========================================
+resilience4j:
+  circuitbreaker:
+    instances:
+      # Account Service 호출용 (잔액 검증)
+      accountServiceCircuitBreaker:
+        baseConfig: default
+        failureRateThreshold: 50
+
+  retry:
+    instances:
+      accountServiceRetry:
+        baseConfig: default
+        maxAttempts: 3
+
+# ========================================
+# 서비스 고유 설정 (Append-only 관련)
+# ========================================
+ledger-service:
+  # ----- Append-only 설정 -----
+  append-only:
+    # UPDATE/DELETE 시도 시 예외 발생 여부
+    strict-mode: true
+    # 위반 시 알림 발송 여부
+    alert-on-violation: true
+
+  # ----- 원장 기록 설정 -----
+  entry:
+    # 원장 기록 보관 기간 (일) - 법적 요구사항에 따라 설정
+    # 0 = 영구 보관
+    retention-days: 0
+    # 배치 처리 크기 (대량 이벤트 처리 시)
+    batch-size: 100
+
+  # ----- 잔액 검증 설정 -----
+  balance-verification:
+    # 주기적 잔액 검증 활성화
+    enabled: true
+    # 검증 주기 (cron 표현식) - 매일 새벽 2시
+    cron: "0 0 2 * * ?"
+    # 불일치 허용 오차 (원) - 0이면 정확히 일치해야 함
+    tolerance: 0
+
+  # ----- 감사 로그 설정 -----
+  audit:
+    # 감사 로그 활성화
+    enabled: true
+    # 감사 로그에 포함할 추가 정보
+    include-request-id: true
+    include-user-id: true
+    include-timestamp: true
