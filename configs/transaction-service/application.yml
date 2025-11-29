@@ -1,33 +1,99 @@
-# Transaction Service 설정
+# ========================================
+# Transaction Service - Config Server 설정
+# ========================================
+# 공통 설정(common/application.yml)을 상속받고
+# Transaction Service에 특화된 설정만 정의
+#
+# 역할: 입출금 처리 (입금, 출금, 거래 내역 조회)
+# 포트: 8082
+# DB: transaction_db
+#
+# 학습 포인트: 멱등성 (Idempotency Key), 중복 요청 방지
+# ========================================
 
-server:
-  port: ${SERVER_PORT:8082}
-
+# ========================================
+# 데이터베이스 설정 (공통 설정 오버라이드)
+# ========================================
 spring:
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/transaction_db}
+    # Transaction Service 전용 DB
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/transaction_db
     username: ${DB_USERNAME:transaction}
     password: ${DB_PASSWORD:transaction}
-    driver-class-name: org.postgresql.Driver
-    hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
-      idle-timeout: 300000
-      connection-timeout: 20000
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-  kafka:
-    consumer:
-      group-id: transaction-service
 
-# Logging
-logging:
-  level:
-    com.junbank.transactionservice: DEBUG
-    org.hibernate.SQL: DEBUG
+  # ========================================
+  # Kafka 토픽 설정
+  # ========================================
+  kafka:
+    template:
+      default-topic: transaction-events
+
+# ========================================
+# Kafka 토픽 정의
+# ========================================
+kafka:
+  topic:
+    # ----- 발행 토픽 (Transaction → 다른 서비스) -----
+    # 입금 완료 이벤트 → Ledger Service
+    deposit-completed: transaction.deposit.completed
+    # 출금 완료 이벤트 → Ledger Service
+    withdrawal-completed: transaction.withdrawal.completed
+    # 거래 실패 이벤트
+    transaction-failed: transaction.failed
+
+    # ----- 구독 토픽 (다른 서비스 → Transaction) -----
+    # 필요 시 추가
+
+# ========================================
+# Feign Client 설정
+# ========================================
+feign:
+  client:
+    config:
+      # Account Service 호출 설정 (잔액 변경)
+      account-service:
+        connectTimeout: 5000
+        readTimeout: 5000
+        loggerLevel: basic
+
+# ========================================
+# Resilience4j 인스턴스 설정
+# ========================================
+resilience4j:
+  circuitbreaker:
+    instances:
+      # Account Service 호출용 Circuit Breaker
+      accountServiceCircuitBreaker:
+        baseConfig: default
+        failureRateThreshold: 50
+        # 잔액 변경은 중요하므로 더 빠른 회복
+        waitDurationInOpenState: 5s
+
+  retry:
+    instances:
+      accountServiceRetry:
+        baseConfig: default
+        maxAttempts: 3
+        # 금융 거래는 재시도 간격을 짧게
+        waitDuration: 500ms
+
+# ========================================
+# 서비스 고유 설정
+# ========================================
+transaction-service:
+  # ----- 멱등성 설정 -----
+  # Idempotency Key 만료 시간 (초) - 기본 24시간
+  # 같은 키로 재요청 시 이전 결과 반환
+  idempotency-key-ttl: 86400
+  # Idempotency Key 헤더 이름
+  idempotency-key-header: X-Idempotency-Key
+
+  # ----- 거래 설정 -----
+  # 단건 입금 최대 금액 (원)
+  max-deposit-amount: 100000000
+  # 단건 출금 최대 금액 (원)
+  max-withdrawal-amount: 50000000
+  # 거래 내역 조회 기본 페이지 크기
+  default-page-size: 20
+  # 거래 내역 보관 기간 (일)
+  transaction-retention-days: 365
