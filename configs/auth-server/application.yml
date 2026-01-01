@@ -20,11 +20,42 @@ spring:
     password: ${DB_PASSWORD:auth}
 
   # ========================================
+  # Redis 설정 (Primary-Replica)
+  # ========================================
+  # Write: Primary (6379)
+  # Read: Replica (6380) - 우선
+  # ========================================
+  data:
+    redis:
+      # Primary 노드 설정
+      host: ${REDIS_PRIMARY_HOST:localhost}
+      port: ${REDIS_PRIMARY_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3000ms
+      connect-timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 10
+          max-idle: 5
+          min-idle: 1
+          max-wait: 3000ms
+
+  # ========================================
   # Kafka 토픽 설정
   # ========================================
   kafka:
     template:
       default-topic: auth-events
+
+# ========================================
+# Redis Replica 설정 (환경변수)
+# ========================================
+# RedisPrimaryReplicaConfig에서 사용
+# ========================================
+redis:
+  replica:
+    host: ${REDIS_REPLICA_HOST:localhost}
+    port: ${REDIS_REPLICA_PORT:6380}
 
 # ========================================
 # JWT 설정 (RS256 비대칭키)
@@ -141,10 +172,32 @@ security:
 # ========================================
 auth-server:
   # 동시 로그인 허용 수 (0 = 무제한)
-  max-concurrent-sessions: 3
+  max-concurrent-sessions: 5
   # 리프레시 토큰 재사용 허용 여부
   refresh-token-reuse: false
   # 로그인 실패 시 계정 잠금 임계값
   login-failure-lock-threshold: 5
   # 계정 잠금 시간 (분)
   account-lock-duration-minutes: 30
+
+# ========================================
+# Rate Limiting 설정
+# ========================================
+rate-limit:
+  # ----- 로그인 Rate Limit -----
+  login:
+    # 시간 윈도우 내 최대 요청 수
+    max-requests: 50
+    # 시간 윈도우 (초) - 10분
+    window-seconds: 600
+    # 초과 시 차단 시간 (초) - 1시간
+    block-seconds: 3600
+
+  # ----- API Rate Limit -----
+  api:
+    # 시간 윈도우 내 최대 요청 수
+    max-requests: 100
+    # 시간 윈도우 (초) - 1분
+    window-seconds: 60
+    # 초과 시 차단 시간 (초) - 10분
+    block-seconds: 600
