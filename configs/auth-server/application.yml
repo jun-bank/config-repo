@@ -25,20 +25,6 @@ spring:
   # Write: Primary (6379)
   # Read: Replica (6380) - 우선
   # ========================================
-  data:
-    redis:
-      # Primary 노드 설정
-      host: ${REDIS_PRIMARY_HOST:localhost}
-      port: ${REDIS_PRIMARY_PORT:6379}
-      password: ${REDIS_PASSWORD:}
-      timeout: 3000ms
-      connect-timeout: 3000ms
-      lettuce:
-        pool:
-          max-active: 10
-          max-idle: 5
-          min-idle: 1
-          max-wait: 3000ms
 
   # ========================================
   # Kafka 토픽 설정
@@ -48,14 +34,31 @@ spring:
       default-topic: auth-events
 
 # ========================================
-# Redis Replica 설정 (환경변수)
-# ========================================
-# RedisPrimaryReplicaConfig에서 사용
+# Redis Primary-Replica 설정
 # ========================================
 redis:
+  # ----- Primary 노드 (Write) -----
+  primary:
+    host: ${REDIS_PRIMARY_HOST:localhost}
+    port: ${REDIS_PRIMARY_PORT:6379}
+    database: 0
+
+  # ----- Replica 노드 (Read) -----
   replica:
     host: ${REDIS_REPLICA_HOST:localhost}
     port: ${REDIS_REPLICA_PORT:6380}
+    database: 0
+
+  # ----- 공통 설정 -----
+  password: ${REDIS_PASSWORD:}
+  timeout: 3000
+
+  # ----- 커넥션 풀 -----
+  pool:
+    max-active: 10
+    max-idle: 5
+    min-idle: 1
+    max-wait: 3000
 
 # ========================================
 # JWT 설정 (RS256 비대칭키)
